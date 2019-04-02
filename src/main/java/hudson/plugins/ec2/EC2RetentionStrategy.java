@@ -24,8 +24,6 @@
 package hudson.plugins.ec2;
 
 import com.amazonaws.AmazonClientException;
-
-
 import hudson.init.InitMilestone;
 import hudson.model.Descriptor;
 import hudson.model.Executor;
@@ -33,14 +31,13 @@ import hudson.model.ExecutorListener;
 import hudson.model.Queue;
 import hudson.slaves.RetentionStrategy;
 import jenkins.model.Jenkins;
+import org.apache.commons.lang.math.NumberUtils;
+import org.kohsuke.stapler.DataBoundConstructor;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-
-import org.apache.commons.lang.math.NumberUtils;
-import org.kohsuke.stapler.DataBoundConstructor;
 
 /**
  * {@link RetentionStrategy} for EC2.
@@ -58,6 +55,8 @@ public class EC2RetentionStrategy extends RetentionStrategy<EC2Computer> impleme
      * billing period.
      */
     public final int idleTerminationMinutes;
+    public int warmPoolThreshold;
+    public int currentPoolCount;
 
     private transient ReentrantLock checkLock;
     private static final int STARTUP_TIME_DEFAULT_VALUE = 30;
@@ -67,7 +66,7 @@ public class EC2RetentionStrategy extends RetentionStrategy<EC2Computer> impleme
                     String.valueOf(STARTUP_TIME_DEFAULT_VALUE)), STARTUP_TIME_DEFAULT_VALUE);
 
     @DataBoundConstructor
-    public EC2RetentionStrategy(String idleTerminationMinutes) {
+    public EC2RetentionStrategy(String idleTerminationMinutes, int warmPoolThreshold, int currentPoolCount) {
         readResolve();
         if (idleTerminationMinutes == null || idleTerminationMinutes.trim().isEmpty()) {
             this.idleTerminationMinutes = 0;
@@ -80,6 +79,9 @@ public class EC2RetentionStrategy extends RetentionStrategy<EC2Computer> impleme
             }
 
             this.idleTerminationMinutes = value;
+            this.warmPoolThreshold = warmPoolThreshold;
+            this.currentPoolCount = currentPoolCount;
+
         }
     }
 
@@ -100,12 +102,17 @@ public class EC2RetentionStrategy extends RetentionStrategy<EC2Computer> impleme
         /*
         * If we've been told never to terminate, or node is null(deleted), no checks to perform
         */
-        if (idleTerminationMinutes == 0 || computer.getNode() == null) {
+        LOGGER.log(Level.INFO, "CurrentPoolCount: " + currentPoolCount + " WarmPoolThreshold: " + warmPoolThreshold + " on " + computer.getInstanceId());
+        if (currentPoolCount <= warmPoolThreshold) {
+            LOGGER.log(Level.INFO, "------------TEST------------ CurrentPoolCount does NOT exceed WarmPoolThreshold on " + computer.getInstanceId());
+        }
+        if (idleTerminationMinutes == 0 || computer.getNode() == null || currentPoolCount <= warmPoolThreshold) {
             return 1;
         }
 
 
         if (computer.isIdle() && !DISABLED) {
+            LOGGER.log(Level.INFO, "TEST---------- Found Computer to be idle on " + computer.getInstanceId());
             final long uptime;
             InstanceState state;
 
@@ -141,7 +148,7 @@ public class EC2RetentionStrategy extends RetentionStrategy<EC2Computer> impleme
 
                     LOGGER.info("Idle timeout of " + computer.getName() + " after "
                             + TimeUnit.MILLISECONDS.toMinutes(idleMilliseconds) +
-                            " idle minutes, instance status"+state.toString());
+                            " idle minutes, instance status "+state.toString());
                     computer.getNode().idleTimeout();
                 }
             } else {

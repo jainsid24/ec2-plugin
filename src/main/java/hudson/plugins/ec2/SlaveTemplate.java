@@ -18,6 +18,31 @@
  */
 package hudson.plugins.ec2;
 
+import com.amazonaws.AmazonClientException;
+import com.amazonaws.AmazonServiceException;
+import com.amazonaws.auth.AWSCredentialsProvider;
+import com.amazonaws.services.ec2.AmazonEC2;
+import com.amazonaws.services.ec2.model.*;
+import hudson.Extension;
+import hudson.Util;
+import hudson.model.*;
+import hudson.model.Descriptor.FormException;
+import hudson.model.labels.LabelAtom;
+import hudson.plugins.ec2.util.DeviceMappingParser;
+import hudson.util.FormValidation;
+import hudson.util.ListBoxModel;
+import hudson.util.Secret;
+import jenkins.model.Jenkins;
+import jenkins.model.JenkinsLocationConfiguration;
+import jenkins.slaves.iterators.api.NodeIterator;
+import org.apache.commons.codec.binary.Base64;
+import org.apache.commons.lang.StringUtils;
+import org.kohsuke.accmod.Restricted;
+import org.kohsuke.accmod.restrictions.NoExternalUse;
+import org.kohsuke.stapler.DataBoundConstructor;
+import org.kohsuke.stapler.QueryParameter;
+
+import javax.servlet.ServletException;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URL;
@@ -27,36 +52,6 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-
-
-import javax.servlet.ServletException;
-
-import hudson.util.Secret;
-import jenkins.model.Jenkins;
-import jenkins.model.JenkinsLocationConfiguration;
-import jenkins.slaves.iterators.api.NodeIterator;
-
-import org.apache.commons.codec.binary.Base64;
-import org.apache.commons.lang.StringUtils;
-import org.kohsuke.accmod.Restricted;
-import org.kohsuke.accmod.restrictions.NoExternalUse;
-import org.kohsuke.stapler.DataBoundConstructor;
-import org.kohsuke.stapler.QueryParameter;
-
-import com.amazonaws.AmazonClientException;
-import com.amazonaws.AmazonServiceException;
-import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.services.ec2.AmazonEC2;
-import com.amazonaws.services.ec2.model.*;
-
-import hudson.Extension;
-import hudson.Util;
-import hudson.model.*;
-import hudson.model.Descriptor.FormException;
-import hudson.model.labels.LabelAtom;
-import hudson.plugins.ec2.util.DeviceMappingParser;
-import hudson.util.FormValidation;
-import hudson.util.ListBoxModel;
 
 /**
  * Template of {@link EC2AbstractSlave} to launch.
@@ -495,13 +490,13 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
      *
      * @return always non-null. This needs to be then added to {@link Hudson#addNode(Node)}.
      */
-    public List<EC2AbstractSlave> provision(int number, EnumSet<ProvisionOptions> provisionOptions) throws AmazonClientException, IOException {
+    public List<EC2AbstractSlave> provision(int number, EnumSet<ProvisionOptions> provisionOptions, int currSlaveCount) throws AmazonClientException, IOException {
         if (this.spotConfig != null) {
             if (provisionOptions.contains(ProvisionOptions.ALLOW_CREATE) || provisionOptions.contains(ProvisionOptions.FORCE_CREATE))
                 return provisionSpot(number, provisionOptions);
             return null;
         }
-        return provisionOndemand(number, provisionOptions);
+        return provisionOndemand(number, provisionOptions, currSlaveCount);
     }
 
     /**
@@ -544,15 +539,15 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
     /**
      * Provisions an On-demand EC2 slave by launching a new instance or starting a previously-stopped instance.
      */
-    private List<EC2AbstractSlave> provisionOndemand(int number, EnumSet<ProvisionOptions> provisionOptions)
+    private List<EC2AbstractSlave> provisionOndemand(int number, EnumSet<ProvisionOptions> provisionOptions, int currSlaveCount)
             throws IOException {
-        return provisionOndemand(number, provisionOptions, false, false);
+        return provisionOndemand(number, provisionOptions, false, false, currSlaveCount);
     }
 
     /**
      * Provisions an On-demand EC2 slave by launching a new instance or starting a previously-stopped instance.
      */
-    private List<EC2AbstractSlave> provisionOndemand(int number, EnumSet<ProvisionOptions> provisionOptions, boolean spotWithoutBidPrice, boolean fallbackSpotToOndemand)
+    private List<EC2AbstractSlave> provisionOndemand(int number, EnumSet<ProvisionOptions> provisionOptions, boolean spotWithoutBidPrice, boolean fallbackSpotToOndemand, int currSlaveCount)
             throws IOException {
         AmazonEC2 ec2 = getParent().connect();
 
@@ -661,7 +656,7 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
         wakeOrphansOrStoppedUp(ec2, orphansOrStopped);
 
         if (orphansOrStopped.size() == number) {
-            return toSlaves(orphansOrStopped);
+            return toSlaves(orphansOrStopped, currSlaveCount);
         }
 
         riRequest.setMaxCount(number - orphansOrStopped.size());
@@ -702,7 +697,7 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
 
         newInstances.addAll(orphansOrStopped);
 
-        return toSlaves(newInstances);
+        return toSlaves(newInstances, currSlaveCount);
     }
 
     private void wakeOrphansOrStoppedUp(AmazonEC2 ec2, List<Instance> orphansOrStopped) {
@@ -726,11 +721,11 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
 
     }
 
-    private List<EC2AbstractSlave> toSlaves(List<Instance> newInstances) throws IOException {
+    private List<EC2AbstractSlave> toSlaves(List<Instance> newInstances, int currSlaveCount) throws IOException {
         try {
             List<EC2AbstractSlave> slaves = new ArrayList<>(newInstances.size());
             for (Instance instance : newInstances) {
-                slaves.add(newOndemandSlave(instance));
+                slaves.add(newOndemandSlave(instance, currSlaveCount));
                 logProvisionInfo("Return instance: " + instance);
             }
             return slaves;
@@ -871,7 +866,7 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
     private List<EC2AbstractSlave> provisionSpot(int number, EnumSet<ProvisionOptions> provisionOptions)
             throws IOException {
         if (!spotConfig.useBidPrice) {
-            return provisionOndemand(1, provisionOptions, true, spotConfig.fallbackToOndemand);
+            return provisionOndemand(1, provisionOptions, true, spotConfig.fallbackToOndemand, 0);
         }
 
         AmazonEC2 ec2 = getParent().connect();
@@ -992,7 +987,7 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
                         List<String> requestsToCancel = reqInstances.stream().map(SpotInstanceRequest::getSpotInstanceRequestId).collect(Collectors.toList());
                         CancelSpotInstanceRequestsRequest cancelRequest = new CancelSpotInstanceRequestsRequest(requestsToCancel);
                         ec2.cancelSpotInstanceRequests(cancelRequest);
-                        return provisionOndemand(number, provisionOptions);
+                        return provisionOndemand(number, provisionOptions, 0);
                     }
                 }
 
@@ -1054,11 +1049,11 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
         return instTags;
     }
 
-    protected EC2OndemandSlave newOndemandSlave(Instance inst) throws FormException, IOException {
+    protected EC2OndemandSlave newOndemandSlave(Instance inst, int currSlaveCount) throws FormException, IOException {
         return new EC2OndemandSlave(getSlaveName(inst.getInstanceId()), inst.getInstanceId(), description, remoteFS, getNumExecutors(), labels, mode, initScript,
                 tmpDir, Collections.emptyList(), remoteAdmin, jvmopts, stopOnTerminate, idleTerminationMinutes, inst.getPublicDnsName(),
                 inst.getPrivateDnsName(), EC2Tag.fromAmazonTags(inst.getTags()), parent.name,
-                useDedicatedTenancy, getLaunchTimeout(), amiType, connectionStrategy, maxTotalUses);
+                useDedicatedTenancy, getLaunchTimeout(), amiType, connectionStrategy, maxTotalUses, currSlaveCount);
     }
 
     protected EC2SpotSlave newSpotSlave(SpotInstanceRequest sir) throws FormException, IOException {
@@ -1151,7 +1146,7 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
     /**
      * Provisions a new EC2 slave based on the currently running instance on EC2, instead of starting a new one.
      */
-    public EC2AbstractSlave attach(String instanceId, TaskListener listener) throws AmazonClientException, IOException {
+    public EC2AbstractSlave attach(String instanceId, TaskListener listener, int currSlaveCount) throws AmazonClientException, IOException {
         PrintStream logger = listener.getLogger();
         AmazonEC2 ec2 = getParent().connect();
 
@@ -1161,7 +1156,7 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
             DescribeInstancesRequest request = new DescribeInstancesRequest();
             request.setInstanceIds(Collections.singletonList(instanceId));
             Instance inst = ec2.describeInstances(request).getReservations().get(0).getInstances().get(0);
-            return newOndemandSlave(inst);
+            return newOndemandSlave(inst, currSlaveCount);
         } catch (FormException e) {
             throw new AssertionError(); // we should have discovered all
                                         // configuration issues upfront

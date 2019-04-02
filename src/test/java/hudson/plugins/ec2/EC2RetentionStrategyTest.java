@@ -1,8 +1,8 @@
 package hudson.plugins.ec2;
 
 import com.amazonaws.AmazonClientException;
-import hudson.slaves.NodeProperty;
 import hudson.model.Executor;
+import hudson.slaves.NodeProperty;
 import org.junit.Rule;
 import org.junit.Test;
 import org.jvnet.hudson.test.JenkinsRule;
@@ -13,7 +13,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertFalse;
 
 public class EC2RetentionStrategyTest {
 
@@ -25,7 +24,7 @@ public class EC2RetentionStrategyTest {
 
     @Test
     public void testOnBillingHourRetention() throws Exception {
-        EC2RetentionStrategy rs = new EC2RetentionStrategy("-2");
+        EC2RetentionStrategy rs = new EC2RetentionStrategy("-2", 1, 1);
         List<int[]> upTime = new ArrayList<int[]>();
         List<Boolean> expected = new ArrayList<Boolean>();
         upTime.add(new int[] { 58, 0 });
@@ -94,7 +93,7 @@ public class EC2RetentionStrategyTest {
 
     @Test
     public void testOnUsageCountRetention() throws Exception {
-        EC2RetentionStrategy rs = new EC2RetentionStrategy("0");
+        EC2RetentionStrategy rs = new EC2RetentionStrategy("0", 1, 1);
         List<Integer> usageCounts = new ArrayList<Integer>();
         List<Boolean> expected = new ArrayList<Boolean>();
         usageCounts.add(5);
